@@ -56,6 +56,11 @@ class RuntimeLauncher(ExeLauncher):
         initial_tag = __version__ if first_run and __version__.startswith('v') and __version__ != 'v0.0.0' else None
         status, message = git_service.fetch_latest_code(log_progress, initial_tag=initial_tag)
 
+        # 代码同步按仓库内容重置工作区，而仓库中的 src/one_dragon/version.py
+        # 恒为占位符，会把启动器内置的真实版本号覆盖掉。这里在同步结束后写回，
+        # 避免后续读到占位符而误判为「有新版本」，反复下载启动器包。
+        self._restore_version_file(__version__)
+
         if status is GitSyncStatus.SUCCESS:
             log.info(message)
             # 清除同步过程中加载的源码模块，避免主程序使用旧版本
@@ -96,6 +101,38 @@ class RuntimeLauncher(ExeLauncher):
                 continue
 
             del sys.modules[name]
+
+    @staticmethod
+    def _restore_version_file(version: str) -> None:
+        """把启动器内置的版本号写回磁盘上的版本文件。
+
+        代码同步按仓库内容重置工作区，而仓库中的
+        ``src/one_dragon/version.py`` 恒为占位符，会把启动器内置的
+        真实版本号覆盖掉。同步结束后写回，使磁盘上的版本号与启动器保持一致。
+
+        Args:
+            version: 启动器内置的版本号。
+        """
+        from one_dragon.utils.log_utils import log
+
+        if not version or version == 'v0.0.0':
+            return
+
+        version_path = Path(sys.executable).parent / 'src' / 'one_dragon' / 'version.py'
+        content = f'__version__ = "{version}"'
+
+        try:
+            if version_path.read_text(encoding='utf-8-sig').strip() == content:
+                return
+        except OSError:
+            log.warning(f'读取版本文件失败，跳过写回: {version_path}', exc_info=True)
+            return
+
+        try:
+            version_path.write_text(f'{content}\n', encoding='utf-8')
+            log.info(f'已把启动器版本号写回版本文件: {version}')
+        except OSError:
+            log.warning(f'写回版本文件失败: {version_path}', exc_info=True)
 
     @staticmethod
     def _hide_console() -> None:
